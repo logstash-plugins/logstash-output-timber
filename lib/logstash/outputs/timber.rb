@@ -13,7 +13,7 @@ require "logstash/outputs/timber/http_client"
 class LogStash::Outputs::Timber < LogStash::Outputs::Base
   include HttpClient
 
-  VERSION = "1.0.0".freeze
+  VERSION = "1.0.1".freeze
   CONTENT_TYPE = "application/json".freeze
   MAX_ATTEMPTS = 3
   METHOD = :post.freeze
