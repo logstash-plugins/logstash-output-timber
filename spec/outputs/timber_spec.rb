@@ -18,54 +18,36 @@ end
 # == Sinatra has ended his set (crowd applauds)
 
 class TestApp < Sinatra::Base
-
   # disable WEBrick logging
   def self.server_settings
     { :AccessLog => [], :Logger => WEBrick::BasicLog::new(nil, WEBrick::BasicLog::FATAL) }
   end
 
-  def self.multiroute(methods, path, &block)
-    methods.each do |method|
-      method.to_sym
-      self.send method, path, &block
-    end
+  def self.add_request(request)
+    self.requests << request
   end
 
-  def self.last_request=(request)
-    @last_request = request
+  def self.requests
+    @requests ||= []
   end
 
-  def self.last_request
-    @last_request
+  def self.reset_requests
+    @requests = []
   end
 
-  def self.retry_fail_count=(count)
-    @retry_fail_count = count
+  post "/good" do
+    self.class.add_request(request)
+    [200, "Good"]
   end
 
-  def self.retry_fail_count()
-    @retry_fail_count
+  post "/auth_error" do
+    self.class.add_request(request)
+    [403, "Bad"]
   end
 
-  multiroute(%w(get post put patch delete), "/good") do
-    self.class.last_request = request
-    [200, "YUP"]
-  end
-
-  multiroute(%w(get post put patch delete), "/bad") do
-    self.class.last_request = request
-    [400, "YUP"]
-  end
-
-  multiroute(%w(get post put patch delete), "/retry") do
-    self.class.last_request = request
-
-    if self.class.retry_fail_count > 0
-      self.class.retry_fail_count -= 1
-      [429, "Will succeed in #{self.class.retry_fail_count}"]
-    else
-      [200, "Done Retrying"]
-    end
+  post "/server_error" do
+    self.class.add_request(request)
+    [500, "Bad"]
   end
 end
 
@@ -98,210 +80,66 @@ RSpec.configure do |config|
 end
 
 describe LogStash::Outputs::Timber do
-  # Wait for the async request to finish in this spinlock
-  # Requires pool_max to be 1
-
   let(:port) { PORT }
-  let(:event) {
-    LogStash::Event.new({"message" => "hi"})
-  }
-  let(:url) { "http://localhost:#{port}/good" }
+  let(:output) { described_class.new({"api_key" => "123:abcd1234", "pool_max" => 1}) }
+  let(:event) { LogStash::Event.new({"message" => "hi"}) }
+  let(:requests) { TestApp.requests }
 
-  shared_examples("verb behavior") do |method|
-    let(:verb_behavior_config) { {"api_key" => "123:abcd1234", "url" => url, "pool_max" => 1} }
-    subject { LogStash::Outputs::Timber.new(verb_behavior_config) }
-
-    let(:expected_method) { :post }
-    let(:client) { subject.client }
-    let(:client_proxy) { subject.client.background }
-
-    before do
-      allow(client).to receive(:background).and_return(client_proxy)
-      subject.register
-      allow(client_proxy).to receive(:send).
-                         with(expected_method, url, anything).
-                         and_call_original
-      allow(subject).to receive(:log_failure).with(any_args)
-    end
-
-    context "performing a get" do
-      describe "invoking the request" do
-        before do
-          subject.multi_receive([event])
-        end
-
-        it "should execute the request" do
-          expect(client_proxy).to have_received(:send).
-                              with(expected_method, url, anything)
-        end
-      end
-
-      context "with passing requests" do
-        before do
-          subject.multi_receive([event])
-        end
-
-        it "should not log a failure" do
-          expect(subject).not_to have_received(:log_failure).with(any_args)
-        end
-      end
-
-      context "with failing requests" do
-        let(:url) { "http://localhost:#{port}/bad"}
-
-        before do
-          subject.multi_receive([event])
-        end
-
-        it "should log a failure" do
-          expect(subject).to have_received(:log_failure).with(any_args)
-        end
-      end
-
-      context "with ignorable failing requests" do
-        let(:url) { "http://localhost:#{port}/bad"}
-        let(:verb_behavior_config) { super.merge("ignorable_codes" => [400]) }
-
-        before do
-          subject.multi_receive([event])
-        end
-
-        it "should log a failure" do
-          expect(subject).not_to have_received(:log_failure).with(any_args)
-        end
-      end
-
-      context "with retryable failing requests" do
-        let(:url) { "http://localhost:#{port}/retry"}
-
-        before do
-          TestApp.retry_fail_count=2
-          allow(subject).to receive(:send_event).and_call_original
-          subject.multi_receive([event])
-        end
-
-        it "should log a failure 2 times" do
-          expect(subject).to have_received(:log_failure).with(any_args).twice
-        end
-
-        it "should make three total requests" do
-          expect(subject).to have_received(:send_event).exactly(3).times
-        end
-      end
-
-    end
+  before(:each) do
+    output.register
+    TestApp.reset_requests
   end
 
-  shared_examples("a received event") do
-    before do
-      TestApp.last_request = nil
+  describe "#send_events" do
+    it "returns false when the max attempts are exceeded" do
+      result = output.send(:send_events, [event], 6)
+      expect(result).to eq(false)
     end
 
-    before do
-      subject.multi_receive([event])
+    it "returns false when the status is 403" do
+      output.url = "http://localhost:#{port}/auth_error"
+      result = output.send(:send_events, [event], 1)
+      expect(result).to eq(false)
+      expect(requests.length).to eq(1)
     end
 
-    let(:last_request) { TestApp.last_request }
-    let(:body) { last_request.body.read }
-    let(:authorization) { last_request.env["HTTP_AUTHORIZATION"] }
-    let(:content_type) { last_request.env["CONTENT_TYPE"] }
-    let(:user_agent) { last_request.env["HTTP_USER_AGENT"] }
-
-    it "should receive the request" do
-      expect(last_request).to be_truthy
+    it "returns false when the status is 500" do
+      allow(output).to receive(:sleep_for_attempt).and_return(0)
+      output.url = "http://localhost:#{port}/server_error"
+      result = output.send(:send_events, [event], 1)
+      expect(result).to eq(false)
+      expect(requests.length).to eq(3)
     end
 
-    it "should receive the event as a hash" do
-      expect(body).to eql(expected_body)
+    it "returns true when the status is 200" do
+      output.url = "http://localhost:#{port}/good"
+      result = output.send(:send_events, [event], 1)
+      expect(result).to eq(true)
+      expect(requests.length).to eq(1)
+
+      request = requests.first
+      expect(request.env["CONTENT_TYPE"]).to eq("application/json")
+      expect(request.env["HTTP_AUTHORIZATION"]).to eq("Basic MTIzOmFiY2QxMjM0")
+      expect(request.env["HTTP_USER_AGENT"]).to eq("Timber Logstash/1.0.0")
+
+      timestamp_iso8601 = event.get("@timestamp").to_iso8601
+      expect(request.body.read).to eq("[{\"@timestamp\":\"#{timestamp_iso8601}\",\"@version\":\"1\",\"message\":\"hi\"}]")
     end
 
-    it "should have the correct authorization" do
-      expect(authorization).to eql("Basic YWJjZDEyMzQ=")
+    it "handles fatal request errors" do
+      allow(output.send(:http_client)).to receive(:post).and_raise("boom")
+
+      output.url = "http://localhost:#{port}/good"
+      result = output.send(:send_events, [event], 1)
+      expect(result).to eq(false)
     end
 
-    it "should have the correct content type" do
-      expect(content_type).to eql(expected_content_type)
-    end
+    it "handles retryable request errors" do
+      expect(output.send(:http_client)).to receive(:post).exactly(3).times.and_raise(::Manticore::Timeout.new)
 
-    it "should have the correct content type" do
-      expect(user_agent).to eql("Timber Logstash/1.0.0")
-    end
-  end
-
-  describe "integration tests" do
-    let(:api_key) { "abcd1234" }
-    let(:url) { "http://localhost:#{port}/good" }
-    let(:event) {
-      LogStash::Event.new("foo" => "bar", "baz" => "bot", "user" => "McBest")
-    }
-
-    subject { LogStash::Outputs::Timber.new(config) }
-
-    before do
-      subject.register
-    end
-
-    describe "sending with the default (JSON) config" do
-      let(:config) {
-        {"api_key" => api_key, "url" => url, "pool_max" => 1}
-      }
-      let(:expected_body) { LogStash::Json.dump(event) }
-      let(:expected_content_type) { "application/json" }
-
-      include_examples("a received event")
-    end
-
-    describe "sending the event as a message" do
-      let(:config) {
-        {"api_key" => api_key, "url" => url, "pool_max" => 1, "format" => "message", "message" => "%{foo} AND %{baz}"}
-      }
-      let(:expected_body) { "#{event.get("foo")} AND #{event.get("baz")}" }
-      let(:expected_content_type) { "text/plain" }
-
-      include_examples("a received event")
-    end
-
-    describe "sending a mapped event" do
-      let(:config) {
-        {"api_key" => api_key, "url" => url, "pool_max" => 1, "mapping" => {"blah" => "X %{foo}"} }
-      }
-      let(:expected_body) { LogStash::Json.dump("blah" => "X #{event.get("foo")}") }
-      let(:expected_content_type) { "application/json" }
-
-      include_examples("a received event")
-    end
-
-    describe "sending a mapped, nested event" do
-      let(:config) {
-        {
-          "api_key" => api_key,
-          "url" => url,
-          "pool_max" => 1,
-          "mapping" => {
-            "host" => "X %{foo}",
-            "event" => {
-              "user" => "Y %{user}"
-            },
-            "arrayevent" => [{
-              "user" => "Z %{user}"
-            }]
-          }
-        }
-      }
-      let(:expected_body) {
-        LogStash::Json.dump({
-          "host" => "X #{event.get("foo")}",
-          "event" => {
-            "user" => "Y #{event.get("user")}"
-          },
-          "arrayevent" => [{
-            "user" => "Z #{event.get("user")}"
-          }]
-        })
-      }
-      let(:expected_content_type) { "application/json" }
-
-      include_examples("a received event")
+      output.url = "http://localhost:#{port}/good"
+      result = output.send(:send_events, [event], 1)
+      expect(result).to eq(false)
     end
   end
 end

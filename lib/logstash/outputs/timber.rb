@@ -28,6 +28,9 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
   URL = "https://logs.timber.io/frames".freeze
   USER_AGENT = "Timber Logstash/#{VERSION}".freeze
 
+  # Attribute for testing purposes only
+  attr_writer :url
+
   concurrency :shared
 
   # This output lets you send events to the Timber.io logging service.
@@ -52,6 +55,7 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
       "Content-Type" => CONTENT_TYPE,
       "User-Agent" => USER_AGENT
     }
+    @url = URL
   end
 
   def multi_receive(events)
@@ -72,8 +76,32 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
         return false
       end
 
-      response = request(events, attempt)
-      return false if response.nil?
+      response =
+        begin
+          hash_events = events.collect(&:to_hash)
+          body = LogStash::Json.dump(hash_events)
+          http_client.post(@url, :body => body, :headers => @headers)
+        rescue Exception => e
+          if retryable_exception?(e)
+            @logger.warn(
+              "Attempt #{attempt}, retryable exception when making request",
+              :attempt => attempt,
+              :class => e.class.name,
+              :message => e.message,
+              :backtrace => e.backtrace
+            )
+            return send_events(events, attempt + 1)
+          else
+            @logger.error(
+              "Attempt #{attempt}, fatal exception when making request",
+              :attempt => attempt,
+              :class => e.class.name,
+              :message => e.message,
+              :backtrace => e.backtrace
+            )
+            return false
+          end
+        end
 
       code = response.code
 
@@ -94,32 +122,13 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
           :attempt => attempt,
           :code => code
         )
+        false
       end
     end
 
-    def request(events, attempt)
-      hash_events = events.collect(&:to_hash)
-      body = LogStash::Json.dump(hash_events)
-      http_client.post(TIMBER_URL, :body => body, :headers => @headers)
-    rescue Exception => e
-      if retryable_exception?(e)
-        @logger.warn(
-          "Attempt #{attempt}, retryable exception when making request",
-          :attempt => attempt,
-          :class => e.class.name,
-          :message => e.message,
-          :backtrace => e.backtrace
-        )
-        request(events, attempt + 1)
-      else
-        @logger.error(
-          "Attempt #{attempt}, fatal exception when making request",
-          :attempt => attempt,
-          :class => e.class.name,
-          :message => e.message,
-          :backtrace => e.backtrace
-        )
-        nil
+    def retryable_exception?(e)
+      RETRYABLE_MANTICORE_EXCEPTIONS.any? do |exception_class|
+        e.is_a?(exception_class)
       end
     end
 
