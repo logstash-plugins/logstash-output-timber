@@ -79,7 +79,7 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
 
       response =
         begin
-          hash_events = events.collect(&:to_hash)
+          hash_events = events.collect { |e| event_hash(e) }
           body = LogStash::Json.dump(hash_events)
           http_client.post(@url, :body => body, :headers => @headers)
         rescue Exception => e
@@ -125,6 +125,12 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
         )
         false
       end
+    end
+
+    def event_hash(e)
+      hash = e.to_hash
+      hash.delete("@version")
+      hash
     end
 
     def retryable_exception?(e)

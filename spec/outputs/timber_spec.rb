@@ -1,7 +1,9 @@
+require "json"
+require "thread"
+
 require "logstash/devutils/rspec/spec_helper"
 require "logstash/outputs/timber"
 require "logstash/codecs/plain"
-require "thread"
 require "sinatra"
 
 PORT = rand(65535-1024) + 1025
@@ -122,8 +124,12 @@ describe LogStash::Outputs::Timber do
       expect(request.env["HTTP_AUTHORIZATION"]).to eq("Basic MTIzOmFiY2QxMjM0")
       expect(request.env["HTTP_USER_AGENT"]).to eq("Timber Logstash/1.0.0")
 
+      parsed_body = JSON.parse!(request.body.read)
+      expect(parsed_body.length).to eq(1)
+
+      body_event = parsed_body.first
       timestamp_iso8601 = event.get("@timestamp").to_iso8601
-      expect(request.body.read).to eq("[{\"@timestamp\":\"#{timestamp_iso8601}\",\"@version\":\"1\",\"message\":\"hi\"}]")
+      expect(body_event).to eq({"@timestamp"=>timestamp_iso8601, "message"=>"hi"})
     end
 
     it "handles fatal request errors" do
