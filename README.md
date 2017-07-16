@@ -1,6 +1,6 @@
 # Logstash Plugin
 
-[![Travis Build Status](https://travis-ci.org/logstash-plugins/logstash-output-http.svg)](https://travis-ci.org/logstash-plugins/logstash-output-http)
+[![Travis Build Status](https://travis-ci.org/timberio/logstash-output-timber.svg)](https://travis-ci.org/timberio/logstash-output-timber)
 
 This is a plugin for [Logstash](https://github.com/elastic/logstash).
 
@@ -74,7 +74,7 @@ You can use the same **2.1** method to run your plugin in an installed Logstash 
 
 - Build your plugin gem
 ```sh
-gem build logstash-output-http.gemspec
+gem build logstash-output-timber.gemspec
 ```
 - Install the plugin from the Logstash home
 ```sh
