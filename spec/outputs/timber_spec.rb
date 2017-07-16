@@ -138,7 +138,7 @@ describe LogStash::Outputs::Timber do
       request = requests.first
       expect(request.env["CONTENT_TYPE"]).to eq("application/json")
       expect(request.env["HTTP_AUTHORIZATION"]).to eq("Basic MTIzOmFiY2QxMjM0")
-      expect(request.env["HTTP_USER_AGENT"]).to eq("Timber Logstash/1.0.1")
+      expect(request.env["HTTP_USER_AGENT"]).to eq("Timber Logstash/1.0.2")
 
       parsed_body = JSON.parse!(request.body.read)
       expect(parsed_body.length).to eq(1)
