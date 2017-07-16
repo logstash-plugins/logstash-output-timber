@@ -1,30 +1,36 @@
 # encoding: utf-8
-require "logstash/outputs/base"
+
+# Core classes
+require "base64"
+require "uri"
+
+# Logstash classes
 require "logstash/namespace"
 require "logstash/json"
-require "uri"
-require "logstash/plugin_mixins/http_client"
+require "logstash/outputs/base"
+require "logstash/outputs/timber/http_client"
 
 class LogStash::Outputs::Timber < LogStash::Outputs::Base
-  include LogStash::PluginMixins::HttpClient
+  include HttpClient
 
-  concurrency :shared
-
-  VALID_METHODS = ["put", "post", "patch", "delete", "get", "head"]
-
+  VERSION = "1.0.0".freeze
+  CONTENT_TYPE = "application/json".freeze
+  MAX_ATTEMPTS = 3
+  METHOD = :post.freeze
   RETRYABLE_MANTICORE_EXCEPTIONS = [
     ::Manticore::Timeout,
     ::Manticore::SocketException,
     ::Manticore::ClientProtocolException,
     ::Manticore::ResolutionFailure,
     ::Manticore::SocketTimeout
-  ]
+  ].freeze
+  RETRYABLE_CODES = [429, 500, 502, 503, 504].freeze
+  URL = "https://logs.timber.io/frames".freeze
+  USER_AGENT = "Timber Logstash/#{VERSION}".freeze
 
-  HTTP_METHOD = :post.freeze
-  TIMBER_URL = "https://logs.timber.io/frames".freeze
+  concurrency :shared
 
-  # This output lets you send events to a
-  # generic HTTP(S) endpoint
+  # This output lets you send events to the Timber.io logging service.
   #
   # This output will execute up to 'pool_max' requests in parallel for performance.
   # Consider this when tuning this plugin for performance.
@@ -33,330 +39,93 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
   # guaranteed!
   #
   # Beware, this gem does not yet support codecs. Please use the 'format' option for now.
+  config_name "timber"
 
-  config_name "http"
-
-  # URL to use
-  config :url, :validate => :string, :required => :true, :default => TIMBER_URL
-
-  # Custom headers to use
-  # format is `headers => ["X-My-Header", "%{host}"]`
-  config :headers, :validate => :hash
-
-  # Content type
-  #
-  # If not specified, this defaults to the following:
-  #
-  # * if format is "json", "application/json"
-  # * if format is "form", "application/x-www-form-urlencoded"
-  config :content_type, :validate => :string
-
-  # Set this to false if you don't want this output to retry failed requests
-  config :retry_failed, :validate => :boolean, :default => true
-
-  # If encountered as response codes this plugin will retry these requests
-  config :retryable_codes, :validate => :number, :list => true, :default => [429, 500, 502, 503, 504]
-
-  # If you would like to consider some non-2xx codes to be successes
-  # enumerate them here. Responses returning these codes will be considered successes
-  config :ignorable_codes, :validate => :number, :list => true
-
-  # This lets you choose the structure and parts of the event that are sent.
-  #
-  #
-  # For example:
-  # [source,ruby]
-  #    mapping => {"foo" => "%{host}"
-  #               "bar" => "%{type}"}
-  config :mapping, :validate => :hash
-
-  # Set the format of the http body.
-  #
-  # If form, then the body will be the mapping (or whole event) converted
-  # into a query parameter string, e.g. `foo=bar&baz=fizz...`
-  #
-  # If message, then the body will be the result of formatting the event according to message
-  #
-  # Otherwise, the event is sent as json.
-  config :format, :validate => ["json", "form", "message"], :default => "json"
-
-  config :message, :validate => :string
+  # Your Timber API key, can be obtained by creating an app at https://app.timber.io
+  config :api_key, :validate => :string, :required => :true
 
   def register
-    # We count outstanding requests with this queue
-    # This queue tracks the requests to create backpressure
-    # When this queue is empty no new requests may be sent,
-    # tokens must be added back by the client on success
-    @request_tokens = SizedQueue.new(@pool_max)
-    @pool_max.times {|t| @request_tokens << true }
-
-    @requests = Array.new
-
-    if @content_type.nil?
-      case @format
-        when "form" ; @content_type = "application/x-www-form-urlencoded"
-        when "json" ; @content_type = "application/json"
-        when "message" ; @content_type = "text/plain"
-      end
-    end
-
-    validate_format!
-
-    # Run named Timer as daemon thread
-    @timer = java.util.Timer.new("HTTP Output #{self.params['id']}", true)
-  end # def register
+    encoded_api_key = Base64.urlsafe_encode64(@api_key).chomp
+    authorization_value = "Basic #{encoded_api_key}"
+    @headers = {
+      "Authorization" => authorization_value,
+      "Content-Type" => CONTENT_TYPE,
+      "User-Agent" => USER_AGENT
+    }
+  end
 
   def multi_receive(events)
-    send_events(events)
-  end
-
-  class RetryTimerTask < java.util.TimerTask
-    def initialize(pending, event, attempt)
-      @pending = pending
-      @event = event
-      @attempt = attempt
-      super()
-    end
-
-    def run
-      @pending << [@event, @attempt]
-    end
-  end
-
-  def send_events(events)
-    successes = java.util.concurrent.atomic.AtomicInteger.new(0)
-    failures  = java.util.concurrent.atomic.AtomicInteger.new(0)
-    retries = java.util.concurrent.atomic.AtomicInteger.new(0)
-
-    pending = Queue.new
-    events.each {|e| pending << [e, 0]}
-
-    while popped = pending.pop
-      break if popped == :done
-
-      event, attempt = popped
-
-      send_event(event, attempt) do |action,event,attempt|
-        begin
-          action = :failure if action == :retry && !@retry_failed
-
-          case action
-          when :success
-            successes.incrementAndGet
-          when :retry
-            retries.incrementAndGet
-
-            next_attempt = attempt+1
-            sleep_for = sleep_for_attempt(next_attempt)
-            @logger.info("Retrying http request, will sleep for #{sleep_for} seconds")
-            timer_task = RetryTimerTask.new(pending, event, next_attempt)
-            @timer.schedule(timer_task, sleep_for*1000)
-          when :failure
-            failures.incrementAndGet
-          else
-            raise "Unknown action #{action}"
-          end
-
-          if action == :success || action == :failure
-            if successes.get+failures.get == events.size
-              pending << :done
-            end
-          end
-        rescue => e
-          # This should never happen unless there's a flat out bug in the code
-          @logger.error("Error sending HTTP Request",
-            :class => e.class.name,
-            :message => e.message,
-            :backtrace => e.backtrace)
-          failures.incrementAndGet
-          raise e
-        end
-      end
-    end
-  rescue => e
-    @logger.error("Error in http output loop",
-            :class => e.class.name,
-            :message => e.message,
-            :backtrace => e.backtrace)
-    raise e
-  end
-
-  def sleep_for_attempt(attempt)
-    sleep_for = attempt**2
-    sleep_for = sleep_for <= 60 ? sleep_for : 60
-    (sleep_for/2) + (rand(0..sleep_for)/2)
-  end
-
-  def send_event(event, attempt)
-    body = event_body(event)
-
-    # Send the request
-    url = event.sprintf(@url)
-    headers = event_headers(event)
-
-    # Create an async request
-    request = client.background.send(HTTP_METHOD, url, :body => body, :headers => headers)
-
-    request.on_success do |response|
-      begin
-        if !response_success?(response)
-          will_retry = retryable_response?(response)
-          log_failure(
-            "Encountered non-2xx HTTP code #{response.code}",
-            :response_code => response.code,
-            :url => url,
-            :event => event,
-            :will_retry => will_retry
-          )
-
-          if will_retry
-            yield :retry, event, attempt
-          else
-            yield :failure, event, attempt
-          end
-        else
-          yield :success, event, attempt
-        end
-      rescue => e
-        # Shouldn't ever happen
-        @logger.error("Unexpected error in request success!",
-          :class => e.class.name,
-          :message => e.message,
-          :backtrace => e.backtrace)
-      end
-    end
-
-    request.on_failure do |exception|
-      begin
-        will_retry = retryable_exception?(exception)
-        log_failure("Could not fetch URL",
-                    :url => url,
-                    :method => HTTP_METHOD,
-                    :body => body,
-                    :headers => headers,
-                    :message => exception.message,
-                    :class => exception.class.name,
-                    :backtrace => exception.backtrace,
-                    :will_retry => will_retry
-        )
-
-        if will_retry
-          yield :retry, event, attempt
-        else
-          yield :failure, event, attempt
-        end
-      rescue => e
-        # Shouldn't ever happen
-        @logger.error("Unexpected error in request failure!",
-          :class => e.class.name,
-          :message => e.message,
-          :backtrace => e.backtrace)
-        end
-    end
-
-    # Actually invoke the request in the background
-    # Note: this must only be invoked after all handlers are defined, otherwise
-    # those handlers are not guaranteed to be called!
-    request.call
+    send_events(events, 1)
   end
 
   def close
-    @timer.cancel
-    client.close
+    http_client.close
   end
 
   private
-
-  def response_success?(response)
-    code = response.code
-    return true if @ignorable_codes && @ignorable_codes.include?(code)
-    return code >= 200 && code <= 299
-  end
-
-  def retryable_response?(response)
-    @retryable_codes.include?(response.code)
-  end
-
-  def retryable_exception?(exception)
-    RETRYABLE_MANTICORE_EXCEPTIONS.any? {|me| exception.is_a?(me) }
-  end
-
-  # This is split into a separate method mostly to help testing
-  def log_failure(message, opts)
-    @logger.error("[HTTP Output Failure] #{message}", opts)
-  end
-
-  # Format the HTTP body
-  def event_body(event)
-    # TODO: Create an HTTP post data codec, use that here
-    if @format == "json"
-      LogStash::Json.dump(map_event(event))
-    elsif @format == "message"
-      event.sprintf(@message)
-    else
-      encode(map_event(event))
-    end
-  end
-
-  def convert_mapping(mapping, event)
-    if mapping.is_a?(Hash)
-      mapping.reduce({}) do |acc, kv|
-        k, v = kv
-        acc[k] = convert_mapping(v, event)
-        acc
-      end
-    elsif mapping.is_a?(Array)
-      mapping.map { |elem| convert_mapping(elem, event) }
-    else
-      event.sprintf(mapping)
-    end
-  end
-
-  def map_event(event)
-    if @mapping
-      convert_mapping(@mapping, event)
-    else
-      event.to_hash
-    end
-  end
-
-  def event_headers(event)
-    headers = custom_headers(event) || {}
-    headers["Content-Type"] = @content_type
-    headers
-  end
-
-  def custom_headers(event)
-    return nil unless @headers
-
-    @headers.reduce({}) do |acc,kv|
-      k,v = kv
-      acc[k] = event.sprintf(v)
-      acc
-    end
-  end
-
-  #TODO Extract this to a codec
-  def encode(hash)
-    return hash.collect do |key, value|
-      CGI.escape(key) + "=" + CGI.escape(value.to_s)
-    end.join("&")
-  end
-
-
-  def validate_format!
-    if @format == "message"
-      if @message.nil?
-        raise "message must be set if message format is used"
+    def send_events(events, attempt)
+      if attempt > MAX_ATTEMPTS
+        @logger.warn(
+          "Max attempts exceeded, dropping events",
+          :attempt => attempt
+        )
+        return false
       end
 
-      if @content_type.nil?
-        raise "content_type must be set if message format is used"
-      end
+      response = request(events, attempt)
+      return false if response.nil?
 
-      unless @mapping.nil?
-        @logger.warn "mapping is not supported and will be ignored if message format is used"
+      code = response.code
+
+      if code >= 200 && code <= 299
+        true
+      elsif RETRYABLE_CODES.include?(code)
+        @logger.warn(
+          "Bad retryable response from the Timber API",
+          :attempt => attempt,
+          :code => code
+        )
+        sleep_time = sleep_for_attempt(attempt)
+        sleep(sleep_time)
+        send_events(events, attempt + 1)
+      else
+        @logger.error(
+          "Bad fatal response from the Timber API",
+          :attempt => attempt,
+          :code => code
+        )
       end
     end
-  end
+
+    def request(events, attempt)
+      hash_events = events.collect(&:to_hash)
+      body = LogStash::Json.dump(hash_events)
+      http_client.post(TIMBER_URL, :body => body, :headers => @headers)
+    rescue Exception => e
+      if retryable_exception?(e)
+        @logger.warn(
+          "Attempt #{attempt}, retryable exception when making request",
+          :attempt => attempt,
+          :class => e.class.name,
+          :message => e.message,
+          :backtrace => e.backtrace
+        )
+        request(events, attempt + 1)
+      else
+        @logger.error(
+          "Attempt #{attempt}, fatal exception when making request",
+          :attempt => attempt,
+          :class => e.class.name,
+          :message => e.message,
+          :backtrace => e.backtrace
+        )
+        nil
+      end
+    end
+
+    def sleep_for_attempt(attempt)
+      sleep_for = attempt ** 2
+      sleep_for = sleep_for <= 60 ? sleep_for : 60
+      (sleep_for / 2) + (rand(0..sleep_for) / 2)
+    end
 end

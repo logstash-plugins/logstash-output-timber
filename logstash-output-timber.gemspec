@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name            = 'logstash-output-timber'
-  s.version         = '1.0.0'
+  s.version         = "1.0.0"
   s.licenses        = ['Apache License (2.0)']
   s.summary         = "This output send events to the Timber.io logging service"
   s.description     = "This gem is a Logstash plugin required to be installed on top of the Logstash core pipeline using $LS_HOME/bin/logstash-plugin install gemname. This gem is not a stand-alone program"
@@ -19,8 +19,8 @@ Gem::Specification.new do |s|
   s.metadata = { "logstash_plugin" => "true", "logstash_group" => "output" }
 
   # Gem dependencies
-  s.add_runtime_dependency "logstash-core-plugin-api", ">= 1.60", "<= 2.99"
-  s.add_runtime_dependency "logstash-mixin-http_client", ">= 5.1.0", "< 6.0.0"
+  s.add_runtime_dependency 'logstash-core-plugin-api', '>= 1.60', '<= 2.99'
+  s.add_runtime_dependency 'manticore', '>= 0.5.2', '< 1.0.0'
 
   s.add_development_dependency 'logstash-devutils'
   s.add_development_dependency 'sinatra'

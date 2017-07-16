@@ -108,7 +108,7 @@ describe LogStash::Outputs::Timber do
   let(:url) { "http://localhost:#{port}/good" }
 
   shared_examples("verb behavior") do |method|
-    let(:verb_behavior_config) { {"url" => url, "pool_max" => 1} }
+    let(:verb_behavior_config) { {"api_key" => "123:abcd1234", "url" => url, "pool_max" => 1} }
     subject { LogStash::Outputs::Timber.new(verb_behavior_config) }
 
     let(:expected_method) { :post }
@@ -203,7 +203,9 @@ describe LogStash::Outputs::Timber do
 
     let(:last_request) { TestApp.last_request }
     let(:body) { last_request.body.read }
+    let(:authorization) { last_request.env["HTTP_AUTHORIZATION"] }
     let(:content_type) { last_request.env["CONTENT_TYPE"] }
+    let(:user_agent) { last_request.env["HTTP_USER_AGENT"] }
 
     it "should receive the request" do
       expect(last_request).to be_truthy
@@ -213,12 +215,21 @@ describe LogStash::Outputs::Timber do
       expect(body).to eql(expected_body)
     end
 
+    it "should have the correct authorization" do
+      expect(authorization).to eql("Basic YWJjZDEyMzQ=")
+    end
+
     it "should have the correct content type" do
       expect(content_type).to eql(expected_content_type)
+    end
+
+    it "should have the correct content type" do
+      expect(user_agent).to eql("Timber Logstash/1.0.0")
     end
   end
 
   describe "integration tests" do
+    let(:api_key) { "abcd1234" }
     let(:url) { "http://localhost:#{port}/good" }
     let(:event) {
       LogStash::Event.new("foo" => "bar", "baz" => "bot", "user" => "McBest")
@@ -232,7 +243,7 @@ describe LogStash::Outputs::Timber do
 
     describe "sending with the default (JSON) config" do
       let(:config) {
-        {"url" => url, "pool_max" => 1}
+        {"api_key" => api_key, "url" => url, "pool_max" => 1}
       }
       let(:expected_body) { LogStash::Json.dump(event) }
       let(:expected_content_type) { "application/json" }
@@ -240,19 +251,9 @@ describe LogStash::Outputs::Timber do
       include_examples("a received event")
     end
 
-    describe "sending the event as a form" do
-      let(:config) {
-        {"url" => url, "pool_max" => 1, "format" => "form"}
-      }
-      let(:expected_body) { subject.send(:encode, event.to_hash) }
-      let(:expected_content_type) { "application/x-www-form-urlencoded" }
-
-      include_examples("a received event")
-    end
-
     describe "sending the event as a message" do
       let(:config) {
-        {"url" => url, "pool_max" => 1, "format" => "message", "message" => "%{foo} AND %{baz}"}
+        {"api_key" => api_key, "url" => url, "pool_max" => 1, "format" => "message", "message" => "%{foo} AND %{baz}"}
       }
       let(:expected_body) { "#{event.get("foo")} AND #{event.get("baz")}" }
       let(:expected_content_type) { "text/plain" }
@@ -262,7 +263,7 @@ describe LogStash::Outputs::Timber do
 
     describe "sending a mapped event" do
       let(:config) {
-        {"url" => url, "pool_max" => 1, "mapping" => {"blah" => "X %{foo}"} }
+        {"api_key" => api_key, "url" => url, "pool_max" => 1, "mapping" => {"blah" => "X %{foo}"} }
       }
       let(:expected_body) { LogStash::Json.dump("blah" => "X #{event.get("foo")}") }
       let(:expected_content_type) { "application/json" }
@@ -273,6 +274,7 @@ describe LogStash::Outputs::Timber do
     describe "sending a mapped, nested event" do
       let(:config) {
         {
+          "api_key" => api_key,
           "url" => url,
           "pool_max" => 1,
           "mapping" => {
