@@ -44,7 +44,8 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
   # Beware, this gem does not yet support codecs. Please use the 'format' option for now.
   config_name "timber"
 
-  # Your Timber API key, can be obtained by creating an app at https://app.timber.io
+  # Your Timber API key. This can be obtained by creating an app at https://app.timber.io.
+  # Already have an app? You can find your API key in your app's settings.
   config :api_key, :validate => :string, :required => :true
 
   def register
