@@ -113,6 +113,22 @@ describe LogStash::Outputs::Timber do
       expect(requests.length).to eq(3)
     end
 
+    it "handles fatal request errors" do
+      allow(output.send(:http_client)).to receive(:post).and_raise("boom")
+
+      output.url = "http://localhost:#{port}/good"
+      result = output.send(:send_events, [event], 1)
+      expect(result).to eq(false)
+    end
+
+    it "handles retryable request errors" do
+      expect(output.send(:http_client)).to receive(:post).exactly(3).times.and_raise(::Manticore::Timeout.new)
+
+      output.url = "http://localhost:#{port}/good"
+      result = output.send(:send_events, [event], 1)
+      expect(result).to eq(false)
+    end
+
     it "returns true when the status is 200" do
       output.url = "http://localhost:#{port}/good"
       result = output.send(:send_events, [event], 1)
@@ -129,23 +145,23 @@ describe LogStash::Outputs::Timber do
 
       body_event = parsed_body.first
       timestamp_iso8601 = event.get("@timestamp").to_iso8601
-      expect(body_event).to eq({"@timestamp"=>timestamp_iso8601, "message"=>"hi"})
+      expect(body_event).to eq({"dt"=>timestamp_iso8601, "message"=>"hi"})
     end
 
-    it "handles fatal request errors" do
-      allow(output.send(:http_client)).to receive(:post).and_raise("boom")
-
+    it "allows payloads conformed to the timber JSON schema" do
       output.url = "http://localhost:#{port}/good"
+      event = LogStash::Event.new({"$schema" => "https://raw.githubusercontent.com/timberio/log-event-json-schema/v2.4.2/schema.json", "message" => "my message", "context" => {"http" => {"path" => "/path"}}})
       result = output.send(:send_events, [event], 1)
-      expect(result).to eq(false)
-    end
+      expect(result).to eq(true)
+      expect(requests.length).to eq(1)
 
-    it "handles retryable request errors" do
-      expect(output.send(:http_client)).to receive(:post).exactly(3).times.and_raise(::Manticore::Timeout.new)
+      request = requests.first
+      parsed_body = JSON.parse!(request.body.read)
+      expect(parsed_body.length).to eq(1)
 
-      output.url = "http://localhost:#{port}/good"
-      result = output.send(:send_events, [event], 1)
-      expect(result).to eq(false)
+      body_event = parsed_body.first
+      timestamp_iso8601 = event.get("@timestamp").to_iso8601
+      expect(body_event).to eq({"$schema"=>"https://raw.githubusercontent.com/timberio/log-event-json-schema/v2.4.2/schema.json", "context"=>{"http"=>{"path"=>"/path"}}, "message"=>"my message", "dt"=>timestamp_iso8601})
     end
   end
 end

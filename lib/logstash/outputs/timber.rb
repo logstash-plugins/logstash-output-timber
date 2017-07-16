@@ -130,6 +130,8 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
     def event_hash(e)
       hash = e.to_hash
       hash.delete("@version")
+      dt = hash.delete("@timestamp")
+      hash["dt"] = dt if !hash.has_key?("dt")
       hash
     end
 
