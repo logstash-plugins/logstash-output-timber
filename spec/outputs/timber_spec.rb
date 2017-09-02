@@ -145,23 +145,62 @@ describe LogStash::Outputs::Timber do
 
       body_event = parsed_body.first
       timestamp_iso8601 = event.get("@timestamp").to_iso8601
-      expect(body_event).to eq({"dt"=>timestamp_iso8601, "message"=>"hi"})
+      expected_payload = {"$schema"=>"https://raw.githubusercontent.com/timberio/log-event-json-schema/v3.1.1/schema.json", "dt"=>timestamp_iso8601, "message"=>"hi"}
+      expect(body_event).to eq(expected_payload)
+    end
+  end
+
+  describe "#event_hash" do
+    it "merges the timber key" do
+      event = LogStash::Event.new({"message" => "my message", "timber" => {"context" => {"system" => {"pid" => 123}}}})
+      hash = output.send(:event_hash, event)
+
+      dt = event.get("@timestamp").utc.to_iso8601
+      expect(hash).to eq({
+        "$schema" => "https://raw.githubusercontent.com/timberio/log-event-json-schema/v3.1.1/schema.json",
+        "context" => {"system" => {"pid" => 123}},
+        "message" => "my message",
+        "dt" => dt
+      })
     end
 
-    it "allows payloads conformed to the timber JSON schema" do
-      output.url = "http://localhost:#{port}/good"
-      event = LogStash::Event.new({"$schema" => "https://raw.githubusercontent.com/timberio/log-event-json-schema/v2.4.2/schema.json", "message" => "my message", "context" => {"http" => {"path" => "/path"}}})
-      result = output.send(:send_events, [event], 1)
-      expect(result).to eq(true)
-      expect(requests.length).to eq(1)
+    it "moves host" do
+      event = LogStash::Event.new({"message" => "my message", "host" => "local.myhost.com"})
+      hash = output.send(:event_hash, event)
 
-      request = requests.first
-      parsed_body = JSON.parse!(request.body.read)
-      expect(parsed_body.length).to eq(1)
+      dt = event.get("@timestamp").utc.to_iso8601
+      expect(hash).to eq({
+        "$schema" => "https://raw.githubusercontent.com/timberio/log-event-json-schema/v3.1.1/schema.json",
+        "message" => "my message",
+        "dt" => dt,
+        "context" => {"system" => {"hostname" => "local.myhost.com"}}
+      })
+    end
 
-      body_event = parsed_body.first
-      timestamp_iso8601 = event.get("@timestamp").to_iso8601
-      expect(body_event).to eq({"$schema"=>"https://raw.githubusercontent.com/timberio/log-event-json-schema/v2.4.2/schema.json", "context"=>{"http"=>{"path"=>"/path"}}, "message"=>"my message", "dt"=>timestamp_iso8601})
+    it "moves everything else to meta" do
+      event = LogStash::Event.new({"message" => "my message", "key" => "val"})
+      hash = output.send(:event_hash, event)
+
+      dt = event.get("@timestamp").utc.to_iso8601
+      expect(hash).to eq({
+        "$schema" => "https://raw.githubusercontent.com/timberio/log-event-json-schema/v3.1.1/schema.json",
+        "message" => "my message",
+        "dt" => dt,
+        "meta" => {"key" => "val"}
+      })
+    end
+
+    it "handles bother timber and host" do
+      event = LogStash::Event.new({"message" => "my message", "host" => "local.myhost.com", "timber" => {"context" => {"system" => {"pid" => 123}}}})
+      hash = output.send(:event_hash, event)
+
+      dt = event.get("@timestamp").utc.to_iso8601
+      expect(hash).to eq({
+        "$schema" => "https://raw.githubusercontent.com/timberio/log-event-json-schema/v3.1.1/schema.json",
+        "message" => "my message",
+        "dt" => dt,
+        "context" => {"system" => {"hostname" => "local.myhost.com", "pid" => 123}}
+      })
     end
   end
 end

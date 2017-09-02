@@ -10,11 +10,16 @@ require "logstash/json"
 require "logstash/outputs/base"
 require "logstash/outputs/timber/http_client"
 
+# This is an output class that intelligently forwards logstash events to the Timber.io service.
+#
+# For a comprehensive overview around how this works and the various configuration options,
+# please see: https://timber.io/docs/platforms/logstash
 class LogStash::Outputs::Timber < LogStash::Outputs::Base
   include HttpClient
 
   VERSION = "1.0.2".freeze
   CONTENT_TYPE = "application/json".freeze
+  JSON_SCHEMA = "https://raw.githubusercontent.com/timberio/log-event-json-schema/v3.1.1/schema.json".freeze
   MAX_ATTEMPTS = 3
   METHOD = :post.freeze
   RETRYABLE_MANTICORE_EXCEPTIONS = [
@@ -25,7 +30,7 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
     ::Manticore::SocketTimeout
   ].freeze
   RETRYABLE_CODES = [429, 500, 502, 503, 504].freeze
-  URL = "https://logs.timber.io/frames".freeze
+  URL = "https://ingestion-staging.timber.io/frames".freeze
   USER_AGENT = "Timber Logstash/#{VERSION}".freeze
 
   # Attribute for testing purposes only
@@ -127,12 +132,64 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
       end
     end
 
+    # This method takes a `Logstash::Event` object and converts it into a hash
+    # that is acceptable by the Timber API. Each event is converted into a JSON
+    # document that conforms to the Timber log event JSON schema:
+    #
+    # https://raw.githubusercontent.com/timberio/log-event-json-schema/v3.1.1/schema.json
+    #
+    # This realized by the following steps:
+    #
+    # 1. Timber will look for specific keys and map them to the appropriate keys as defined
+    #    in our log event JSON schema. Specifically `@timestamp`, `host`, and `message`.
+    # 2. If a `timber` key is present it _must_ be a hash that conforms to the Timber log event
+    #    JSON schema. This hash will be merged in before being sent to Timber.
+    # 3. All other root level keys will be treated as generic JSON and will be made available
+    #    in Timber as they would kibana, etc.
     def event_hash(e)
-      hash = e.to_hash
-      hash.delete("@version")
-      dt = hash.delete("@timestamp")
-      hash["dt"] = dt if !hash.has_key?("dt")
-      hash
+      timber_hash = {"$schema" => JSON_SCHEMA}
+      event_hash = e.to_hash
+
+      # Delete unused logstash specific attributes
+      event_hash.delete("@version")
+
+      # Map the timber key first since we merge in values
+      # later.
+      timber = event_hash.delete("timber")
+      if timber.is_a?(Hash)
+        timber_hash.merge!(timber)
+      end
+
+      # Map the timestamp
+      timestamp = event_hash.delete("@timestamp")
+
+      if timestamp
+        timber_hash["dt"] ||= timestamp.utc.to_iso8601
+      end
+
+      # Map the host
+      host = event_hash.delete("host")
+
+      if host
+        timber_hash["context"] ||= {}
+        timber_hash["context"]["system"] ||= {}
+        timber_hash["context"]["system"]["hostname"] ||= host
+      end
+
+      # Map the message
+      message = event_hash.delete("message")
+
+      if message
+        timber_hash["message"] ||= message
+      end
+
+      # Move everything else to meta, merging to preseve previous meta values.
+      if event_hash != {}
+        timber_hash["meta"] ||= {}
+        timber_hash["meta"].merge!(event_hash)
+      end
+
+      timber_hash
     end
 
     def retryable_exception?(e)

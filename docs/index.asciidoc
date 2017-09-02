@@ -20,9 +20,16 @@ include::{include_path}/plugin_header.asciidoc[]
 
 ==== Description
 
-This output sends structured events to the Timber.io logging service.
+This output sends structured events to the https://timber.io[Timber.io logging service].
+Timber is a cloud-based logging service designed for developers, providing easy features
+out of the box that make you more productive.
+https://timber.io/docs/app/console/tail-a-user[Tail users],
+https://timber.io/docs/app/console/trace-http-requests[trace requests],
+https://timber.io/docs/app/console/inspect-http-requests[inspect HTTP parameters],
+and https://timber.io/docs/app/console/searching[search] on rich structured data without
+sacrificing readability.
 
-It's a highly efficient HTTP transport that uses batching and retries for
+Internally, it's a highly efficient HTTP transport that uses batching and retries for
 fast and reliable delivery.
 
 This output will execute up to 'pool_max' requests in parallel for performance.
@@ -63,13 +70,22 @@ output plugins.
 &nbsp;
 
 [id="plugins-{type}s-{plugin}-api_key"]
-===== `cacert`
+===== `api_key`
 
   * Value type is <<string,string>>
   * There is no default value for this setting.
 
 Your Timber.io API key. You can obtain your API by creating an app in the
 [Timber console](https://app.timber.io).
+
+
+[id="plugins-{type}s-{plugin}-cacert"]
+===== `cacert`
+
+  * Value type is <<path,path>>
+  * There is no default value for this setting.
+
+If you need to use a custom X.509 CA (.pem certs) specify the path to that here.
 
 
 [id="plugins-{type}s-{plugin}-client_cert"]
