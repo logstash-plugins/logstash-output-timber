@@ -1,6 +1,6 @@
 # 🌲 Timber.io Logstash Output Plugin
 
-[![Travis Build Status](https://travis-ci.org/timberio/logstash-output-timber.svg)](https://travis-ci.org/timberio/logstash-output-timber)
+[![Travis Build Status](https://travis-ci.org/logstash-plugins/logstash-output-timber.svg)](https://travis-ci.org/logstash-plugins/logstash-output-timber)
 
 This is a plugin for [Logstash](https://github.com/elastic/logstash).
 
