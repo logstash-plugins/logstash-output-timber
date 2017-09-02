@@ -30,7 +30,7 @@ class LogStash::Outputs::Timber < LogStash::Outputs::Base
     ::Manticore::SocketTimeout
   ].freeze
   RETRYABLE_CODES = [429, 500, 502, 503, 504].freeze
-  URL = "https://ingestion-staging.timber.io/frames".freeze
+  URL = "https://logs.timber.io/frames".freeze
   USER_AGENT = "Timber Logstash/#{VERSION}".freeze
 
   # Attribute for testing purposes only
