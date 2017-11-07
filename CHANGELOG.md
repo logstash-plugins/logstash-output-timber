@@ -1,4 +1,7 @@
 ## 1.0.3
+  - Update gemspec summary
+
+## 1.0.3
  - Intelligently map logstash events to the Timber.io log event JSON schema
    (https://github.com/timberio/log-event-json-schema).
 
